@@ -162,7 +162,7 @@
         } else if (input instanceof MultiArgMorph) {
             let inputs = input.inputs();
             let args = inputs.map(v => compileInput(env, v));
-            return args.join(",");
+            return `new List([${args.join(",")}])`;
         
         // list as arguments
         } else if (input instanceof ArgLabelMorph) {
@@ -292,6 +292,9 @@
                 return `ENV.func.fork(${forkArgs.join(",")})`;
             }
 
+            /* OPERATORS */
+
+
             /* VARIABLES/LISTS */
             case "reportGetVar": {
                 let varName = block.parts()[0].text;
@@ -304,7 +307,8 @@
                 }
             }
             case "reportNewList": {
-                return `new List([${ block.inputs().map(v => compileInput(env, v)).join(",") }])`;
+                //return `new List(${ block.inputs().map(v => compileInput(env, v)).join(",") })`;
+                return compileInput(env, block.inputs()[0]);
             }
 
             case "doDeclareVariables": {
@@ -317,7 +321,7 @@
                     }
                 }
 
-                return `let ${defined.map(v => v.define()).join(",")}`;
+                return `var ${defined.map(v => v.define()).join(",")}`;
             }
 
             case "doSetVar": {
