@@ -13,6 +13,21 @@
 
     const GeneratorFunction = (function*(){}).constructor;
 
+    function* listIterator(list) {
+        if (list.isLinked) {
+            let pair = list;
+
+            while (pair.first !== null || pair.contents.length > 0) {
+                yield pair.at(1);
+                pair = pair.cdr();
+            }
+        } else {
+            for (let i = 1; i <= list.length(); i++) {
+                yield list.at(i);
+            }
+        }
+    }
+
     const yieldingOverrides = {
         *doWarp(ENV, code) {
             ENV.process.isAtomic = true;
@@ -30,6 +45,293 @@
             yield ["wait", +waitTime];
             ENV.process.blockReceiver().stopTalking();
         },
+
+        *doThinkFor(ENV, data, waitTime) {
+            ENV.process.blockReceiver().doThink(data);
+            yield ["wait", +waitTime];
+            ENV.process.blockReceiver().stopTalking();
+        },
+
+        *doAsk(ENV, data) {
+            var doYield = false;
+
+            function pushContextTrap(thing) {
+                if (thing === doYield) {
+                    doYield = true;
+                }
+            }
+
+            var proxy = new Proxy(ENV.process, {
+                get(target, prop, receiver) {
+                    if (prop === "pushContext") return pushContextTrap;
+                    return Reflect.get(...arguments);
+                }
+            });
+
+            do {
+                doYield = false;
+                ENV.process.doAsk.call(proxy, data);
+                if (doYield) yield;
+            } while (doYield);
+        },
+
+        *reportURL(ENV, url) {
+            var process = ENV.process;
+
+            url = decodeURI(url);
+            process.checkURLAllowed(url);
+
+            // use the location protocol unless the user specifies otherwise
+            if (url.indexOf('//') < 0 || url.indexOf('//') > 8) {
+                if (location.protocol === 'file:') {
+                    // allow requests from locally loaded sources
+                    url = 'https://' + url;
+                } else {
+                    url = location.protocol + '//' + url;
+                }
+            }
+
+            var httpRequest = new XMLHttpRequest();
+            httpRequest.open("GET", url);
+            httpRequest.send(null);
+
+            if (process.context.isCustomCommand) {
+                return;
+            }
+
+            while (httpRequest.readyState !== 4) yield;
+
+            return httpRequest.responseText;
+        },
+
+        *doGlide(ENV, secs, endX, endY) {
+            secs = +secs;
+            endX = +endX;
+            endY = +endY;
+
+            let startTime = Date.now();
+            let startValue = new Point(
+                ENV.process.blockReceiver().xPosition(),
+                ENV.process.blockReceiver().yPosition()
+            );
+
+            let elapsed;
+
+            while ((elapsed = Date.now() - startTime) >= (secs * 1000)) {
+                ENV.process.blockReceiver().glide(
+                    secs * 1000,
+                    endX,
+                    endY,
+                    elapsed,
+                    startValue
+                );
+                yield;
+            }
+
+            ENV.process.blockReceiver().gotoXY(endX, endY);
+        },
+
+        *doPlaySoundUntilDone(ENV, name) {
+            let activeAudio = ENV.process.playSound(name);
+            while (!(name === null || activeAudio.ended || activeAudio.terminated)) yield;
+        },
+
+        *reportMap(ENV, reporter, list) {
+            // answer a new list containing the results of the reporter applied
+            // to each value of the given list. Distinguish between linked and
+            // arrayed lists.
+            // if the reporter uses formal parameters instead of implicit empty slots
+            // there are two additional optional parameters:
+            // #1 - element
+            // #2 - optional | index
+            // #3 - optional | source list
+            var process = ENV.process;
+            process.assertType(list, "list");
+            var numArgs = reporter.length;
+
+            if (list.isLinked) {
+                let root = new List();
+
+                let resultCons = root;
+                let srcCons = list;
+
+                let index = 1;
+
+                while (srcCons !== null && !srcCons.isEmpty()) {
+                    resultCons.isLinked = true;
+                    resultCons.first = numArgs > 0 ? yield* reporter(srcCons.at(1), index, list) : yield* reporter(srcCons.at(1));
+                    resultCons.rest = new List();
+
+                    resultCons = resultCons.rest;
+                    srcCons = srcCons.cdr();
+
+                    index++;
+                }
+
+                return root;
+            } else {
+                let result = [];
+
+                for (let i = 1; i <= list.length(); i++) {
+                    if (numArgs > 0) {
+                        result[i - 1] = yield* reporter(list.at(i), i, list);
+                    } else {
+                        result[i - 1] = yield* reporter(list.at(i));
+                    }
+                }
+
+                return new List(result);
+            }
+        },
+
+        *reportKeep(ENV, predicate, list) {
+            // answer a new list containing the results of the reporter applied
+            // to each value of the given list. Distinguish between linked and
+            // arrayed lists.
+            // if the reporter uses formal parameters instead of implicit empty slots
+            // there are two additional optional parameters:
+            // #1 - element
+            // #2 - optional | index
+            // #3 - optional | source list
+            var process = ENV.process;
+            process.assertType(list, "list");
+            var numArgs = predicate.length;
+
+            if (list.isLinked) {
+                let root = new List();
+
+                let resultCons = root;
+                let srcCons = list;
+
+                let index = 1;
+
+                while (srcCons !== null && !srcCons.isEmpty()) {
+                    let res = numArgs > 0 ? yield* predicate(srcCons.at(1), index, list) : yield* predicate(srcCons.at(1));
+
+                    if (res) {
+                        resultCons.isLinked = true;
+                        resultCons.first = srcCons.at(1);
+                        resultCons.rest = new List();
+
+                        resultCons = resultCons.rest;
+                    }
+
+                    srcCons = srcCons.cdr();
+                    index++;
+                }
+
+                return root;
+            } else {
+                let result = [];
+                let j = 0;
+
+                for (let i = 1; i <= list.length(); i++) {
+                    let res = numArgs > 0 ? yield* predicate(list.at(i), i, list) : yield* predicate(list.at(i));
+
+                    if (res) {
+                        result[j++] = list.at(i);
+                    }
+                }
+            }
+        },
+
+        *reportFindFirst(ENV, predicate, list) {
+            var process = ENV.process;
+
+            process.assertType(list, "list");
+            var numArgs = predicate.length;
+            var index = 1;
+
+            for (let item of listIterator(list)) {
+                if (numArgs>0 ? yield* predicate(item, index, list) : yield* predicate(item)) {
+                    return item;
+                }
+
+                index++;
+            }
+
+            /*
+            if (list.isLinked) {
+                let pair = list;
+                let index = 1;
+
+                while (pair.first !== null || pair.contents.length > 0) {
+                    let val = pair.at(1);
+
+                    if (numArgs>0 ? yield* predicate(val, index, list) : yield* predicate(val)) {
+                        return val;
+                    }
+
+                    pair = pair.cdr();
+                    index++;
+                }
+            } else {
+                for (let i = 1; i <= list.length(); i++) {
+                    let val = list.at(i);
+
+                    if (numArgs>0 ? yield* predicate(val, i, list) : yield* predicate(val)) {
+                        return val;
+                    }
+                }
+            }*/
+
+            return "";
+        },
+
+        *reportCombine(ENV, list, reporter) {
+            // Fold - answer an aggregation of all list items from "left to right"
+            // Distinguish between linked and arrayed lists.
+            // if the reporter uses formal parameters instead of implicit empty slots
+            // there are two additional optional parameters:
+            // #1 - accumulator
+            // #2 - element
+            // #3 - optional | index
+            // #4 - optional | source list
+            var process = ENV.process;
+
+            process.assertType(list, "list");
+            var numArgs = reporter.length;
+
+            var index = 1;
+            var accum = 0;
+
+            for (let item of listIterator(list)) {
+                if (index === 1) {
+                    accum = item;
+                } else {
+                    accum = numArgs>0 ? yield* reporter(accum, item, index, list) : yield* reporter(accum, item);
+                }
+
+                index++;
+            }
+
+            return accum;
+
+            /*
+            if (list.isLinked) {
+                let accum = list.at(1);
+                let pair = list.cdr();
+                let index = 2;
+
+                while (pair.first !== null || pair.contents.length > 0) {
+                    accum = numArgs>0 ? yield* reporter(accum, pair.at(1), index, list) : yield* reporter(accum, pair.at(1));
+                    pair = pair.cdr();
+                }
+
+                return accum;
+            } else {
+                let accum = list.at(1);
+
+                for (let i = 2; i <= list.length(); i++) {
+                    accum = numArgs>0 ? yield* reporter(accum, list.at(i), i, list) : yield* reporter(accum, list.at(i));
+                }
+
+                return accum;
+            }
+            */
+        },
+
+        listIterator: listIterator,
 
         *customBlock(ENV, semanticSpec, ...args) {
             let method = ENV.process.blockReceiver().getMethod(semanticSpec);
@@ -238,9 +540,13 @@
                 `${code}\n}`;
             } else {
                 // TODO weird implicit behavior with mismatched inputs
-                return `function*(${paramIDs.map(v=>v+"=0").join(",")}){\n` +
+                /*return `function*(${paramIDs.map(v=>v+"=0").join(",")}){\n` +
                 code +
-                `\n}`;
+                `\n}`;*/
+                return `function*(...ARGUMENTS){\n` +
+                    paramIDs.map((id, i) => `var ${id}=ARGUMENTS[${i}]===undefined?${i==0 ? "0" : paramIDs[i-1]}:ARGUMENTS[${i}];\n`).join("") +
+                    code +
+                    "\n}";
             }
 
             //if (newEnv.doesYield) {
@@ -267,7 +573,7 @@
                 }
             } else {
                 // if input is a number and input slot is numeric
-                if (!Number.isNaN(+text)) {
+                if (!Number.isNaN(parseFloat(text))) {
                     return `${text}`;
 
                 // as string
@@ -350,6 +656,13 @@
                 return `while(!(${compileInput(scope, inputs[0])})){\n${compileScript(scope.inherit(), inputs[1].nestedBlock())}\nyield;}`
             }
 
+            case "doWaitUntil": {
+                let inputs = block.inputs();
+
+                scope.doesYield = true;
+                return `while(!(${compileInput(scope, inputs[0])})) yield;`
+            }
+
             case "doFor": {
                 let inputs = block.inputs();
 
@@ -360,7 +673,7 @@
                 let out = "";
                 if (!varData) {
                     varData = scope.env.addVariable(counterName);
-                    out = `var ${varData.define()};`
+                    out = `var ${varData.define()};`;
                 }
 
                 let start = compileInput(scope, inputs[1]);
@@ -369,12 +682,30 @@
                 scope.env.doesYield = true;
 
                 // this is extra complicated since it is calculating the direction of the for loop
-                return out + `{let start=${start},end=${end};` +
+                return `{let start=${start},end=${end};` +
                 `for(${varData.set("start")};`+
                 `end>start?${varData.get()}<=end:${varData.get()}>=start;`+
                 `${varData.get()}+=end>start?1:-1){\n`+
                 script+
                 `\nyield;}}`;
+            }
+
+            case "doForEach": {
+                let inputs = block.inputs();
+                let upvarName = readUpvarName(inputs[0]);
+                let varData = scope.env.getVariable(upvarName);
+
+                let out = "";
+                if (!varData) {
+                    varData = scope.env.addVariable(upvarName);
+                    out = `var ${varData.define()};`;
+                }
+
+                let list = compileInput(scope, inputs[1]);
+                let script = compileScript(scope.inherit(), inputs[2].nestedBlock());
+                scope.env.doesYield = true;
+
+                return `for (${varData.get()} of ENV.func.listIterator(${list})){\n${script}\nyield;}`
             }
 
             case "doIf": {
